@@ -1,0 +1,10 @@
+{
+  "name": "castor",
+  "description": "Git maintenance skills: clean up stale worktrees/Conductor workspaces and merged local and remote branches, with evidence-based safety checks.",
+  "version": "0.1.0",
+  "author": {
+    "name": "msanyam"
+  },
+  "repository": "https://github.com/msanyam/castor",
+  "keywords": ["git", "worktree", "branches", "cleanup", "conductor"]
+}

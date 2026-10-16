@@ -1,0 +1,17 @@
+{
+  "name": "castor",
+  "owner": {
+    "name": "msanyam"
+  },
+  "metadata": {
+    "description": "Castor team plugins for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "castor",
+      "source": "./",
+      "description": "Git maintenance skills: /castor:git-worktree-cleanup and /castor:git-branch-cleanup",
+      "version": "0.1.0"
+    }
+  ]
+}
