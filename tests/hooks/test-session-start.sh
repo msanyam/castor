@@ -174,6 +174,18 @@ assert_command_output \
     CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
     bash "$HOOK_UNDER_TEST"
 
+# Upstream skill text says superpowers:<name>; the hook must tell the agent
+# those references resolve to castor's skills.
+alias_home="$(make_home superpowers-alias)"
+assert_command_output \
+    "SessionStart maps superpowers: skill references to castor:" \
+    "nested" \
+    $'You have superpowers.\n\nSkill references written as superpowers:<name> mean castor:<name>.' \
+    "" \
+    "$alias_home" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT" \
+    bash "$HOOK_UNDER_TEST"
+
 wrapper_home="$(make_home run-hook-wrapper)"
 assert_command_output \
     "run-hook.cmd wrapper dispatches to the named session-start script" \

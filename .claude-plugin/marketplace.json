@@ -10,8 +10,8 @@
     {
       "name": "castor",
       "source": "./",
-      "description": "Git maintenance skills: /castor:git-worktree-cleanup and /castor:git-branch-cleanup",
-      "version": "0.1.0"
+      "description": "Feature-building workflow for existing codebases (brainstorm, plan, TDD, debug, review) plus git maintenance skills. Built on superpowers.",
+      "version": "0.2.0"
     }
   ]
 }
