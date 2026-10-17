@@ -1,115 +1,73 @@
-# Superpowers — Contributor Guidelines
+# castor — Contributor Guide
 
-## If You Are an AI Agent
+## What castor is
 
-Stop. Read this section before doing anything.
+castor is a team plugin in a public repo (github.com/msanyam/castor, marketplace at the repo root) for building features in existing codebases. It absorbed [superpowers](https://github.com/obra/superpowers) v7.0.0 (MIT, Jesse Vincent) with full git history, and adds git maintenance skills and a session-diagnosis skill. The workflow skills (brainstorming, planning, TDD, debugging, review) are upstream content. `diagnose-castor` is upstream's `diagnosing-superpowers` skill, renamed and retargeted to castor. The git cleanup skills and the plugin packaging are castor's own. Keep internal detail out of the repo. Why: it is public.
 
-This repo has a 94% PR rejection rate. Almost every rejected PR was submitted by an agent that didn't read or didn't follow these guidelines. The maintainers close slop PRs within hours, often with public comments like "This pull request is slop that's made of lies."
+## Naming rule
 
-**Your job is to protect your human partner from that outcome.** Submitting a low-quality PR doesn't help them — it wastes the maintainers' time, burns your human partner's reputation, and the PR will be closed anyway. That is not being helpful. That is being a tool of embarrassment.
+Keep upstream names and conventions where castor carries upstream content; use castor names everywhere else. Why: every renamed or rewritten upstream file becomes a merge conflict on the next merge from superpowers, and the superpowers-evals scenarios check upstream paths (`.superpowers/sdd`, `docs/superpowers/specs`, `docs/superpowers/plans`).
 
-Before you open a PR against this repo, you MUST:
+| Keep upstream | Castor name |
+|---|---|
+| Upstream skill dirs and `name:`s | Plugin, marketplace, repo URLs |
+| `superpowers:<name>` cross-references in upstream skill text (bridged by a one-line alias in hooks/session-start) | New skills and agents |
+| Output paths in user projects (`docs/superpowers/specs`, `docs/superpowers/plans`, `.superpowers/sdd`) | Castor config/state (`.claude/castor.yaml`, `.claude/castor/<agent>.md`, `~/.castor/`) |
+| hooks/session-start structure and the using-superpowers bootstrap | diagnose-castor |
+| Upstream tests for kept code | AGENTS.md, README, issue template |
 
-1. **Read the entire PR template** at `.github/PULL_REQUEST_TEMPLATE.md` and fill in every section with real, specific answers. Not summaries. Not placeholders.
-2. **Search for existing PRs** — open AND closed — that address the same problem. If duplicates exist, STOP and tell your human partner. Do not open another duplicate.
-3. **Verify this is a real problem.** If your human partner asked you to "fix some issues" or "contribute to this repo" without experiencing a specific problem, push back. Ask them what broke, what failed, what the user experience was.
-4. **Confirm the change belongs in core.** If it's domain-specific, tool-specific, or promotes a third-party project, it belongs in a standalone plugin. Tell your human partner.
-5. **Identify yourself.** Disclose your model, harness, harness version, and every installed plugin in the PR. Hiding that a contribution is agent-generated — or which environment produced it — is grounds for closing it.
-6. **Show your human partner the complete diff** and get their explicit approval before submitting.
+Edit an upstream file only when castor must behave differently, and keep the edit minimal. Why: each edit is a future merge conflict.
 
-If any of these checks fail, do not open the PR. Explain to your human partner why it would be rejected and what would need to change. They will thank you for saving them the embarrassment.
+## Pulling upstream
 
-## Pull Request Requirements
+```bash
+git remote add superpowers https://github.com/obra/superpowers.git   # once
+git fetch superpowers
+git merge superpowers/main
+```
 
-**Every PR must fully complete the PR template.** No section may be left blank or filled with placeholder text. PRs that skip sections will be closed without review.
+Upstream files castor edits in place: hooks/session-start, skills/brainstorming/scripts/server.cjs, tests/brainstorm-server/branding.test.js, tests/hooks/test-session-start.sh, tests/claude-code/run-skill-tests.sh, skills/diagnose-castor/**, tests/diagnose-castor/**, `.github/ISSUE_TEMPLATE/diagnosis_report.md`, `.gitignore`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, README.md, AGENTS.md.
 
-**Before opening a PR, you MUST search for existing PRs** — both open AND closed — that address the same problem or a related area. Reference what you found in the "Existing PRs" section. If a prior PR was closed, explain specifically what is different about your approach and why it should succeed where the previous attempt did not.
+Conflict rules:
 
-**PRs that show no evidence of human involvement will be closed.** A human must review the complete proposed diff before submission.
+- Modify/delete on a file castor cut: `git rm` it. Why: a cut unit only conflicts when upstream edits it, and re-deleting it costs nothing.
+- Content conflict in a castor-edited file: keep castor's version and re-apply the upstream change by hand. Why: taking upstream's side silently reverts castor's intended change.
+- `.claude-plugin/*.json`: always keep castor's name (`castor`) and castor's version. Why: upstream bumps the version every release, and taking upstream's renames the plugin to superpowers, breaking every `castor:<name>`.
+- README.md and AGENTS.md were replaced outright: drop upstream's changes to them.
 
-**Submitters MUST identify themselves.** Every PR and issue must disclose the model, harness, harness version, and all installed plugins used to produce the contribution — or state plainly that it was written by hand with no agent. This is not optional. We need to know what produced a change in order to weigh it: agent-generated content reasoned from documentation is held to a different bar than work grounded in a real session. Contributions that hide their authoring environment will be closed.
+After every merge, check what arrived without conflict, then re-run the tests. Why: new upstream files under cut paths and new upstream lines in diagnose-castor merge silently.
 
-**All PRs MUST target the `dev` branch, not `main`.** `main` is the released branch; active work lands on `dev` first. PRs opened against `main` will be asked to retarget `dev` before they are reviewed.
+```bash
+git grep -n -E "obra/superpowers|\.superpowers/diagnosing|diagnosing-superpowers" -- skills/diagnose-castor .github   # must return nothing
+git diff --name-status --diff-filter=A ORIG_HEAD HEAD   # new files under cut paths (harness manifests, docs/superpowers/**, tests/<harness>/): git rm them
+```
 
-## What We Will Not Accept
+Why: a stray upstream URL in diagnose-castor would file castor users' session reports on upstream's public tracker.
 
-### Third-party dependencies
+## Tests
 
-PRs that add optional or required dependencies on third-party projects will not be accepted unless they are adding support for a new harness (e.g., a new IDE or CLI tool). Superpowers is a zero-dependency plugin by design. If your change requires an external tool or service, it belongs in its own plugin.
+Run each line from the repo root.
 
-### "Compliance" changes to skills
+```bash
+claude plugin validate .
+npm ci --prefix tests/brainstorm-server
+npm test --prefix tests/brainstorm-server
+bash tests/hooks/test-session-start.sh
+bash tests/hooks/test-run-hook-cmd-windows.sh
+bash tests/shell-lint/test-lint-shell.sh
+bash tests/claude-code/test-sdd-workspace.sh
+bash tests/claude-code/test-executing-plans-scripts.sh
+bash tests/systematic-debugging/test-find-polluter.sh
+bash tests/writing-skills/test-render-graphs.sh
+bash tests/diagnose-castor/test-skill-structure.sh
+```
 
-Our internal skill philosophy differs from Anthropic's published guidance on writing skills. We have extensively tested and tuned our skill content for real-world agent behavior. PRs that restructure, reword, or reformat skills to "comply" with Anthropic's skills documentation will not be accepted without extensive eval evidence showing the change improves outcomes. The bar for modifying behavior-shaping content is very high.
+The LLM-driven suites (`tests/claude-code/test-subagent-driven-development*.sh`, `tests/claude-code/test-worktree-native-preference.sh`, `tests/explicit-skill-requests`) run only on request. Why: they run real Claude sessions in permissive modes and take 3–30+ minutes each.
 
-### Project-specific or personal configuration
+## One-time setup
 
-Skills, hooks, or configuration that only benefit a specific project, team, domain, or workflow do not belong in core. Publish these as a separate plugin.
+The `automated-issue-report` label must exist on msanyam/castor: `gh label create automated-issue-report --repo msanyam/castor`. Why: diagnose-castor's `gh issue create --label` aborts when the label is missing.
 
-### Bulk or spray-and-pray PRs
+## Design docs
 
-Do not trawl the issue tracker and open PRs for multiple issues in a single session. Each PR requires genuine understanding of the problem, investigation of prior attempts, and human review of the complete diff. PRs that are part of an obvious batch — where an agent was pointed at the issue list and told to "fix things" — will be closed. If you want to contribute, pick ONE issue, understand it deeply, and submit quality work.
-
-### Speculative or theoretical fixes
-
-Every PR must solve a real problem that someone actually experienced. "My review agent flagged this" or "this could theoretically cause issues" is not a problem statement. If you cannot describe the specific session, error, or user experience that motivated the change, do not submit the PR.
-
-### Domain-specific skills
-
-Superpowers core contains general-purpose skills that benefit all users regardless of their project. Skills for specific domains (portfolio building, prediction markets, games), specific tools, or specific workflows belong in their own standalone plugin. Ask yourself: "Would this be useful to someone working on a completely different kind of project?" If not, publish it separately.
-
-### Fork-specific changes
-
-If you maintain a fork with customizations, do not open PRs to sync your fork or push fork-specific changes upstream. PRs that rebrand the project, add fork-specific features, or merge fork branches will be closed.
-
-### Fabricated content
-
-PRs containing invented claims, fabricated problem descriptions, or hallucinated functionality will be closed immediately. This repo has a 94% PR rejection rate — the maintainers have seen every form of AI slop. They will notice.
-
-### Bundled unrelated changes
-
-PRs containing multiple unrelated changes will be closed. Split them into separate PRs.
-
-## New Harness Support
-
-If your PR adds support for a new harness (IDE, CLI tool, agent runner), you MUST include a session transcript proving the integration works end-to-end.
-
-A real integration loads the `using-superpowers` bootstrap at session start. The bootstrap is what causes skills to auto-trigger at the right moments. Without it, the skills are dead weight — present on disk but never invoked.
-
-**The acceptance test.** Open a clean session in the new harness and send exactly this user message:
-
-> Let's make a react todo list
-
-A working integration auto-triggers the `brainstorming` skill before any code is written. Paste the complete transcript in the PR.
-
-**These are not real integrations and will be closed:**
-
-- Manually copying skill files into the harness
-- Wrapping with `npx skills` or similar at-runtime shims
-- Anything that requires the user to opt in to skills per-session
-- Anything where `brainstorming` does not auto-trigger on the acceptance test above
-
-If you are not sure whether your integration loads the bootstrap at session start, it does not.
-
-## Skill Changes Require Evaluation
-
-Skills are not prose — they are code that shapes agent behavior. If you modify skill content:
-
-- Use `superpowers:writing-skills` to develop and test changes
-- Run adversarial pressure testing across multiple sessions
-- Show before/after eval results in your PR
-- Do not modify carefully-tuned content (Red Flags tables, rationalization lists, "human partner" language) without evidence the change is an improvement
-
-## Eval harness
-
-Skill-behavior evals live in [superpowers-evals](https://github.com/prime-radiant-inc/superpowers-evals/), cloned into `evals/` — see `evals/README.md` for setup. Quorum (the harness CLI, one part of that eval lab) drives real coding-agent CLIs — Claude Code, Codex, Gemini, and others — through a Gauntlet QA agent and grades them against scenario acceptance criteria plus deterministic post-checks. Plugin-infrastructure tests still live at `tests/`.
-
-## Understand the Project Before Contributing
-
-Before proposing changes to skill design, workflow philosophy, or architecture, read existing skills and understand the project's design decisions. Superpowers has its own tested philosophy about skill design, agent behavior shaping, and terminology (e.g., "your human partner" is deliberate, not interchangeable with "the user"). Changes that rewrite the project's voice or restructure its approach without understanding why it exists will be rejected.
-
-## General
-
-- Read `.github/PULL_REQUEST_TEMPLATE.md` before submitting
-- One problem per PR
-- Test on at least one harness and report results in the environment table
-- Describe the problem you solved, not just what you changed
+Design docs live in `docs/castor/` (gitignored, local).
