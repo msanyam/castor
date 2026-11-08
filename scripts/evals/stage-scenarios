@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#
+# Copy the harness scenarios and retarget skill names to castor.
+#
+# Usage:
+#   scripts/evals/stage-scenarios <src> <dst>
+#
+# Rewrites superpowers:<skill> to castor:<skill> in checks.sh,
+# checks-manifest.json and story.md directly inside each scenario dir of <dst>.
+# <src> is never modified.
+set -euo pipefail
+
+if [[ $# -ne 2 ]]; then
+  echo "usage: stage-scenarios <src> <dst>" >&2
+  exit 2
+fi
+
+src="$1"
+dst="$2"
+
+if [[ ! -d "$src" ]]; then
+  echo "error: source is not a directory: $src" >&2
+  exit 1
+fi
+
+# "src/." copies contents, so the result is the same whether or not dst exists.
+mkdir -p "$dst"
+cp -R "$src"/. "$dst"/
+
+for f in "$dst"/*/checks.sh "$dst"/*/checks-manifest.json "$dst"/*/story.md; do
+  [[ -f "$f" ]] || continue
+  perl -pi -e 's/superpowers:([a-z0-9][a-z0-9-]*)/castor:$1/g' "$f"
+done

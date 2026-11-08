@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+#
+# Run the castor eval baseline: stage scenarios, run the sentinel tier once per
+# trial, and write docs/evals/baseline-<date>.md.
+#
+# Usage:
+#   scripts/evals/run-baseline [--trials N] [--scenarios csv]
+#
+# Defaults to 3 trials. CASTOR_EVALS_DIR overrides the harness clone path
+# (default: <castor>/evals). Exit codes: 0 ok, 1 bad input or failed
+# preflight, 2 usage.
+
+# Paused 2026-11-08: a full baseline is projected at $30-70 on Bedrock, over
+# the $2 eval budget. Evals get revisited at the end of the castor work; to
+# re-enable, delete the shellcheck directive below and the echo/exit pair.
+# The directive silences the unreachable-code findings the early exit causes.
+# shellcheck disable=SC2317,SC2329
+set -euo pipefail
+
+echo "error: evals are paused; see the comment at the top of $0" >&2
+exit 1
+
+CASTOR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+EVALS_DIR="${CASTOR_EVALS_DIR:-$CASTOR_ROOT/evals}"
+
+# Both models run on Bedrock Mantle. The region must match opus5_bedrock's in
+# evals/credentials.yaml.
+CREDENTIAL=opus5_bedrock
+GRADER_MODEL=anthropic.claude-sonnet-5
+MANTLE_REGION=us-east-1
+MANTLE_BASE_URL="https://bedrock-mantle.$MANTLE_REGION.api.aws/anthropic"
+
+usage() {
+  sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 2
+}
+
+die() {
+  echo "error: $*" >&2
+  exit 1
+}
+
+parse_args() {
+  TRIALS=3
+  SCENARIOS=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --trials)
+        [ $# -ge 2 ] || usage
+        TRIALS="$2"
+        shift 2
+        ;;
+      --scenarios)
+        [ $# -ge 2 ] || usage
+        SCENARIOS="$2"
+        shift 2
+        ;;
+      *) usage ;;
+    esac
+  done
+  case "$TRIALS" in '' | *[!0-9]* | 0*) usage ;; esac
+}
+
+preflight() {
+  [ -d "$EVALS_DIR" ] || die "evals dir not found: $EVALS_DIR (see AGENTS.md, Evals)"
+  EVALS_DIR="$(cd "$EVALS_DIR" && pwd)"
+  local cmd
+  for cmd in bun gauntlet claude tmux jq uv; do
+    command -v "$cmd" > /dev/null 2>&1 || die "missing on PATH: $cmd (see AGENTS.md, Evals)"
+  done
+  # The harness launches whichever claude PATH resolves to. Why: on 2026-11-08
+  # a Homebrew claude that hung at exec made a run indeterminate after 4.5
+  # minutes of paid grader time.
+  claude_responds || die "'$(command -v claude) --version' did not answer within 10s; put a working claude first on PATH"
+  # Fail on missing AWS credentials before creating anything.
+  mint_bedrock_key
+}
+
+claude_responds() {
+  claude --version > /dev/null 2>&1 &
+  local pid=$! i
+  for ((i = 0; i < 20; i++)); do
+    kill -0 "$pid" 2> /dev/null || {
+      wait "$pid"
+      return
+    }
+    sleep 0.5
+  done
+  kill "$pid" 2> /dev/null
+  return 1
+}
+
+# Set BEDROCK_KEY to a fresh 12-hour Bedrock API key from the AWS credential
+# chain (AWS_PROFILE picks the account). Minted per trial so a long run never
+# outlives its key. Never print it.
+mint_bedrock_key() {
+  BEDROCK_KEY="$("$CASTOR_ROOT/scripts/evals/bedrock-token" "$MANTLE_REGION")" ||
+    die "could not mint a Bedrock key from AWS profile '${AWS_PROFILE:-default}'${WORK:+ (work dir: $WORK)}"
+  [ -n "$BEDROCK_KEY" ] || die "bedrock-token printed nothing${WORK:+ (work dir: $WORK)}"
+}
+
+# Set CASTOR_REV and PLUGIN_DIRTY. Each git call is its own assignment so a
+# failure stops the script instead of recording "" or dirty=false.
+snapshot_castor() {
+  local porcelain
+  CASTOR_REV="$(git -C "$CASTOR_ROOT" rev-parse HEAD)" || die "git rev-parse HEAD failed in $CASTOR_ROOT (work dir: $WORK)"
+  [ -n "$CASTOR_REV" ] || die "git rev-parse HEAD returned nothing in $CASTOR_ROOT (work dir: $WORK)"
+  porcelain="$(git -C "$CASTOR_ROOT" status --porcelain -- skills hooks .claude-plugin)" || die "git status failed in $CASTOR_ROOT (work dir: $WORK)"
+  PLUGIN_DIRTY=false
+  [ -z "$porcelain" ] || PLUGIN_DIRTY=true
+}
+
+write_meta() {
+  local scen_json=null evals_rev
+  evals_rev="$(git -C "$EVALS_DIR" rev-parse HEAD)" || die "git rev-parse HEAD failed in $EVALS_DIR (work dir: $WORK)"
+  [ -n "$evals_rev" ] || die "git rev-parse HEAD returned nothing in $EVALS_DIR (work dir: $WORK)"
+  [ -z "$SCENARIOS" ] || scen_json="$(jq -n --arg s "$SCENARIOS" '$s')"
+  jq -n \
+    --arg date "$DATE" \
+    --arg castor_rev "$CASTOR_REV" \
+    --argjson castor_dirty "$PLUGIN_DIRTY" \
+    --arg evals_rev "$evals_rev" \
+    --arg credential "$CREDENTIAL" \
+    --argjson trials "$TRIALS" \
+    --argjson scenarios "$scen_json" \
+    '{date: $date, castor_rev: $castor_rev, castor_dirty: $castor_dirty, evals_rev: $evals_rev,
+      coding_agent: "claude", credential: $credential, tier: "sentinel",
+      trials: $trials, scenarios: $scenarios}' > "$1"
+}
+
+# Sample the real host into the JSON shape QUORUM_HOST_STATS_PROBE_FIXTURE
+# expects (all numbers; every field except load1 an integer).
+write_host_stats() {
+  local out="$1" page pages swap load1 mem_total procs pid_max disk_free disk_total
+  # A failed probe leaves its value empty (|| true); need_number then dies naming it.
+  page="$(pagesize)" || true
+  # Available = free + inactive + speculative pages (inactive is reclaimable).
+  pages="$(vm_stat | awk '/^Pages (free|inactive|speculative):/ { n += $3 } END { printf "%.0f", n }')" || true
+  # vm.swapusage: "total = 10240.00M  used = 9094.06M  free = ..." -> "<total> <used>" bytes.
+  swap="$(sysctl -n vm.swapusage | awk '
+    function bytes(v, u) {
+      u = substr(v, length(v))
+      v = substr(v, 1, length(v) - 1) + 0
+      return v * (u == "K" ? 1024 : u == "G" ? 1073741824 : u == "T" ? 1099511627776 : 1048576)
+    }
+    { printf "%.0f %.0f", bytes($3), bytes($6) }')" || true
+  load1="$(sysctl -n vm.loadavg | awk '{ print $2 }')" || true
+  mem_total="$(sysctl -n hw.memsize)" || true
+  procs="$(ps -A -o pid= | wc -l | tr -d ' ')" || true
+  pid_max="$(sysctl -n kern.maxproc)" || true
+  disk_free="$(df -k "$WORK" | awk 'NR == 2 { printf "%.0f", $4 * 1024 }')" || true
+  disk_total="$(df -k "$WORK" | awk 'NR == 2 { printf "%.0f", $2 * 1024 }')" || true
+  need_number load1 "$load1" decimal
+  need_number page_size "$page"
+  need_number free_inactive_speculative_pages "$pages"
+  need_number mem_total_bytes "$mem_total"
+  need_number swap_total_bytes "${swap% *}"
+  need_number swap_used_bytes "${swap#* }"
+  need_number process_count "$procs"
+  need_number pid_max "$pid_max"
+  need_number disk_free_bytes "$disk_free"
+  need_number disk_total_bytes "$disk_total"
+  jq -n \
+    --argjson load1 "$load1" \
+    --argjson avail "$((pages * page))" \
+    --argjson mem_total "$mem_total" \
+    --argjson swap_total "${swap% *}" \
+    --argjson swap_used "${swap#* }" \
+    --argjson procs "$procs" \
+    --argjson pid_max "$pid_max" \
+    --argjson disk_free "$disk_free" \
+    --argjson disk_total "$disk_total" \
+    '{load1: $load1, mem_available_bytes: $avail, mem_total_bytes: $mem_total,
+      swap_used_bytes: $swap_used, swap_total_bytes: $swap_total, process_count: $procs,
+      pid_max: $pid_max, disk_free_bytes: $disk_free, disk_total_bytes: $disk_total}' > "$out"
+}
+
+# need_number <metric> <value> [decimal]: die unless value is a non-negative
+# integer (or decimal). Why: jq --argjson "" exits 2, which reads as a usage
+# error and leaves an empty fixture behind.
+need_number() {
+  local re='^[0-9]+$'
+  [ "${3:-}" != decimal ] || re='^[0-9]+(\.[0-9]+)?$'
+  [[ "$2" =~ $re ]] || die "host stats: $1 is empty or non-numeric: '$2'"
+}
+
+run_trial() {
+  local t="$1" scen_args=()
+  [ -z "$SCENARIOS" ] || scen_args=(--scenarios "$SCENARIOS")
+  echo "trial $t/$TRIALS: $WORK/trial-$t"
+  if [ "$(uname)" = Darwin ]; then
+    write_host_stats "$WORK/host-stats-$t.json"
+    export QUORUM_HOST_STATS_PROBE_FIXTURE="$WORK/host-stats-$t.json"
+  fi
+  mint_bedrock_key
+  # bun loads evals/.env only from its cwd, and quorum resolves paths against it.
+  # Local run-all doesn't send the grader to Mantle by itself. The scoped mode
+  # makes the grader read only the QUORUM_GRADER_* names, so a stray host
+  # ANTHROPIC_API_KEY can't route it to the direct API. Mantle accepts the
+  # bearer as x-api-key (evals/src/credentials/resolve.ts, mantleGraderEnv).
+  # The key goes in the child's env, not argv, so ps doesn't show it.
+  (cd "$EVALS_DIR" && SUPERPOWERS_ROOT="$CASTOR_ROOT" \
+    AWS_BEARER_TOKEN_BEDROCK="$BEDROCK_KEY" \
+    QUORUM_GRADER_ANTHROPIC_API_KEY="$BEDROCK_KEY" \
+    QUORUM_GRADER_SOURCE_MODE=appliance-scoped \
+    QUORUM_GRADER_ANTHROPIC_BASE_URL="$MANTLE_BASE_URL" \
+    bun run quorum run-all \
+    --coding-agents claude --credentials "$CREDENTIAL" --grader-model "$GRADER_MODEL" \
+    --tier sentinel \
+    --scenarios-root "$WORK/scenarios" --out-root "$WORK/trial-$t" --jobs 2 \
+    ${scen_args[@]+"${scen_args[@]}"})
+}
+
+# The run takes hours on a live worktree. If HEAD moved or the plugin paths
+# went dirty, stamp the baseline dirty so "dirty: no" means "unchanged".
+check_drift() {
+  local start_rev="$CASTOR_REV"
+  snapshot_castor
+  if [ "$CASTOR_REV" != "$start_rev" ] || [ "$PLUGIN_DIRTY" = true ]; then
+    jq '.castor_dirty = true' "$WORK/meta.json" > "$WORK/meta.json.tmp"
+    mv "$WORK/meta.json.tmp" "$WORK/meta.json"
+    echo "warning: castor changed during the run (HEAD or skills/hooks/.claude-plugin); baseline marked dirty" >&2
+  fi
+}
+
+# The baseline is written once: never replace an existing file (a smoke run
+# must not clobber the committed baseline), and check before spending money.
+refuse_existing_baseline() {
+  [ ! -e "$BASELINE" ] || die "baseline already exists: $BASELINE; move it aside first${1:+ (work dir: $1; summarize manually with scripts/evals/summarize-baseline $1)}"
+}
+
+write_baseline() {
+  local tmp
+  mkdir -p "$(dirname "$BASELINE")"
+  tmp="$(mktemp "$(dirname "$BASELINE")/.baseline.XXXXXX")"
+  # A Ctrl-C before the mv must not leave .baseline.* in the tracked tree.
+  trap 'rm -f "$tmp"; exit 130' INT TERM
+  if ! "$CASTOR_ROOT/scripts/evals/summarize-baseline" "$WORK" > "$tmp"; then
+    rm -f "$tmp"
+    die "summarize-baseline failed (work dir: $WORK); rerun: scripts/evals/summarize-baseline $WORK"
+  fi
+  # mv -n never overwrites; if the destination appeared since the check, tmp is still here.
+  mv -n "$tmp" "$BASELINE"
+  trap 'exit 130' INT TERM
+  if [ -e "$tmp" ]; then
+    rm -f "$tmp"
+    refuse_existing_baseline "$WORK"
+  fi
+}
+
+main() {
+  parse_args "$@"
+  preflight
+  DATE="$(date -u +%Y-%m-%d)"
+  BASELINE="$CASTOR_ROOT/docs/evals/baseline-$DATE.md"
+  # Refuse before creating anything: a refused run leaves no work dir behind.
+  refuse_existing_baseline
+  # mkdir without -p on the leaf: two runs in the same second must not share a work dir.
+  mkdir -p "$HOME/.castor/eval-runs"
+  WORK="$HOME/.castor/eval-runs/$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir "$WORK" || die "work dir already exists: $WORK"
+  "$CASTOR_ROOT/scripts/evals/stage-scenarios" "$EVALS_DIR/scenarios" "$WORK/scenarios"
+  snapshot_castor
+  write_meta "$WORK/meta.json"
+  # run-all exits 0 after Ctrl-C; without this the next paid trial would start.
+  trap 'exit 130' INT TERM
+  local t
+  for ((t = 1; t <= TRIALS; t++)); do
+    run_trial "$t"
+  done
+  check_drift
+  write_baseline
+  echo "$BASELINE"
+}
+
+main "$@"
