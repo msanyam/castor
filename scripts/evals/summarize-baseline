@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+#
+# Fold quorum verdicts from a run-baseline work dir into a markdown pass-rate table.
+#
+# Usage: summarize-baseline <work-dir>
+#   Reads <work-dir>/meta.json, <work-dir>/trial-*/batches/*/results.jsonl and
+#   <work-dir>/trial-<n>/<run_id>/verdict.json. Prints the baseline markdown on stdout.
+# Exit codes: 0 ok, 1 bad input, 2 usage.
+set -euo pipefail
+
+if [ "$#" -ne 1 ]; then
+  echo "usage: summarize-baseline <work-dir>" >&2
+  exit 2
+fi
+work="$1"
+meta="$work/meta.json"
+[ -f "$meta" ] || {
+  echo "summarize-baseline: missing $meta" >&2
+  exit 1
+}
+
+rows=()
+for f in "$work"/trial-*/batches/*/results.jsonl; do
+  [ -f "$f" ] && rows+=("$f")
+done
+if [ "${#rows[@]}" -eq 0 ]; then
+  echo "summarize-baseline: no results.jsonl under $work" >&2
+  exit 1
+fi
+# A truncated or corrupt row would otherwise be swallowed by the process substitution below.
+for f in "${rows[@]}"; do
+  jq empty "$f" 2>/dev/null || {
+    echo "summarize-baseline: malformed JSON in $f" >&2
+    exit 1
+  }
+done
+
+# One "scenario<TAB>outcome" line per counted row. Rows skipped by the matrix before anything
+# runs (reasons from evals/src/contracts/batch.ts) are dropped; any other skip reason
+# (stopped, rate-limited) is a cell that should have run, so it counts as indeterminate.
+outcomes() {
+  local f trial scenario run_id final
+  for f in "${rows[@]}"; do
+    trial="${f%/batches/*}"
+    while IFS=$'\t' read -r scenario run_id; do
+      final=indeterminate
+      if [ -n "$run_id" ]; then
+        final="$(jq -r '.final' "$trial/$run_id/verdict.json" 2>/dev/null || true)"
+      fi
+      case "$final" in
+        pass | fail) ;;
+        *) final=indeterminate ;;
+      esac
+      printf '%s\t%s\n' "$scenario" "$final"
+    done < <(jq -r 'select(.skipped as $s | ["directive", "draft", "tier", "harness", "os"] | index($s) | not) | [.scenario, (if .skipped then "" else (.run_id // "") end)] | @tsv' "$f")
+  done
+}
+
+lines="$(outcomes)"
+if [ -z "$lines" ]; then
+  echo "summarize-baseline: no counted rows under $work (all skipped or empty)" >&2
+  exit 1
+fi
+
+jq -r '"# Castor eval baseline: \(.date)\n\n- castor: \(.castor_rev[0:7]) (dirty: \(if .castor_dirty then "yes" else "no" end)) · evals: \(.evals_rev[0:7]) · agent: \(.coding_agent) · credential: \(.credential) · tier: \(.tier) · trials: \(.trials)\(if .scenarios then " · scenarios: \(.scenarios)" else "" end)\n\n| Scenario | Pass | Fail | Indeterminate | Pass rate |\n|---|---|---|---|---|"' "$meta"
+
+# Sorted input means each scenario's lines are adjacent; awk emits a row per group.
+printf '%s\n' "$lines" | LC_ALL=C sort -t "$(printf '\t')" -k1,1 | awk -F '\t' '
+  function rate(p, d) {
+    if (d == 0) return "0/0 (n/a)"
+    return p "/" d " (" int((200 * p + d) / (2 * d)) "%)"
+  }
+  function flush() {
+    if (name == "") return
+    printf "| %s | %d | %d | %d | %s |\n", name, p, f, i, rate(p, p + f)
+    P += p; F += f; I += i; p = f = i = 0
+  }
+  $1 != name { flush(); name = $1 }
+  $2 == "pass" { p++ }
+  $2 == "fail" { f++ }
+  $2 == "indeterminate" { i++ }
+  END {
+    flush()
+    r = rate(P, P + F)
+    sub(/^[0-9]+\/[0-9]+ /, "", r)
+    printf "\n**Overall:** %d/%d determinate runs passed %s. %d indeterminate.\n", P, P + F, r, I
+  }'

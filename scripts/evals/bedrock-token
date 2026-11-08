@@ -1,0 +1,35 @@
+#!/usr/bin/env -S uv run --script --quiet
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["aws-bedrock-token-generator"]
+# ///
+#
+# Print a short-term Bedrock API key (valid 12 hours) minted from the AWS
+# credential chain, so AWS_PROFILE picks the account.
+#
+# Usage:
+#   scripts/evals/bedrock-token <region>
+#
+# Exit codes: 0 ok, 1 no AWS credentials or signing failed, 2 usage.
+import sys
+
+from aws_bedrock_token_generator import provide_token
+from botocore.exceptions import BotoCoreError
+
+
+def main() -> int:
+    if len(sys.argv) != 2 or not sys.argv[1]:
+        print("usage: bedrock-token <region>", file=sys.stderr)
+        return 2
+    try:
+        token = provide_token(region=sys.argv[1])
+    # The generator raises RuntimeError when the chain finds no credentials.
+    except (BotoCoreError, RuntimeError) as exc:
+        print(f"error: could not mint a Bedrock key: {exc}", file=sys.stderr)
+        return 1
+    print(token)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

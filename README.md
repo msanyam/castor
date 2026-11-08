@@ -1,13 +1,38 @@
 # castor
 
-Claude Code plugin with git maintenance skills for the team.
+Claude Code plugin for building features in existing codebases: a brainstorm, plan, TDD, debug, and review workflow, plus git maintenance skills for the team.
+
+## Skills
+
+**Git maintenance** (user-invoked only; start with `--dry-run` to see the report without changing anything):
 
 | Command | What it does |
 |---|---|
 | `/castor:git-worktree-cleanup [--dry-run] [--all]` | Finds merged, orphaned, and stale git worktrees (including Conductor workspaces), reports disk usage, and removes only what is provably safe after one confirmation. |
 | `/castor:git-branch-cleanup [--dry-run] [--local] [--remote]` | Finds local and remote branches whose exact tip is merged (including squash merges), and deletes them after separate local and remote confirmations. |
 
-Both skills are user-invoked only. Start with `--dry-run` to see the report without changing anything.
+**Workflow skills** (absorbed from superpowers): invoked as `castor:<name>` and auto-triggered by the SessionStart bootstrap.
+
+| Skill | When it applies |
+|---|---|
+| `castor:brainstorming` | Before any creative work: turn an idea into a design. |
+| `castor:writing-plans` | A spec exists and a multi-step task needs a plan. |
+| `castor:executing-plans` | Execute a plan yourself in the current session. |
+| `castor:subagent-driven-development` | Execute a plan with independent tasks via subagents. |
+| `castor:dispatching-parallel-agents` | Two or more independent tasks with no shared state. |
+| `castor:test-driven-development` | Any feature or bugfix, before writing implementation code. |
+| `castor:systematic-debugging` | Any bug, test failure, or unexpected behavior. |
+| `castor:verification-before-completion` | Before claiming work is done, fixed, or passing. |
+| `castor:requesting-code-review` | After completing tasks or major features. |
+| `castor:receiving-code-review` | Before acting on review feedback. |
+| `castor:using-git-worktrees` | Feature work that needs isolation from the current workspace. |
+| `castor:finishing-a-development-branch` | Implementation is done and tests pass; decide how to integrate. |
+| `castor:writing-skills` | Creating or editing skills. |
+| `castor:using-superpowers` | The bootstrap that teaches the session to find and use skills. |
+
+**Diagnosis:** `/castor:diagnose-castor` explains why a castor session went wrong (repeated work, ignored plans, a skill that did not fire, cost) and can build a bug report for the maintainers.
+
+If superpowers is installed, disable it: both plugins inject the same bootstrap.
 
 ## Install
 
@@ -79,8 +104,10 @@ Layout:
 ```
 .claude-plugin/plugin.json        plugin manifest (name = command prefix)
 .claude-plugin/marketplace.json   makes this repo installable as a marketplace
-skills/<name>/SKILL.md            one directory per command
+skills/<name>/SKILL.md            one directory per skill
 ```
+
+Contributor rules, upstream merge steps, and tests are in `AGENTS.md`.
 
 To release, bump `version` in both `plugin.json` and `marketplace.json` (`claude plugin tag` checks they agree). Users only receive updates when the version changes.
 
@@ -90,3 +117,5 @@ To release, bump `version` in both `plugin.json` and `marketplace.json` (`claude
 - Worktrees are removed without `--force`; branches are deleted only when their exact tip is proven merged.
 - Remote deletes need their own confirmation and cover only your own branches.
 - If your permission rules deny a delete (for example `git branch -d`), the skill stops and prints the commands for you to run instead of working around the denial.
+
+Built on [superpowers](https://github.com/obra/superpowers) by Jesse Vincent, MIT; see LICENSE.

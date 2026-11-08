@@ -1,7 +1,7 @@
 {
   "name": "castor",
-  "description": "Git maintenance skills: clean up stale worktrees/Conductor workspaces and merged local and remote branches, with evidence-based safety checks.",
-  "version": "0.1.0",
+  "description": "Feature-building workflow for existing codebases (brainstorm, plan, TDD, debug, review) plus git maintenance skills. Built on superpowers.",
+  "version": "0.2.0",
   "author": {
     "name": "msanyam"
   },
